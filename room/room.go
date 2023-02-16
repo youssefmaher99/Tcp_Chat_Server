@@ -8,6 +8,6 @@ import (
 type Room struct {
 	Name     string
 	Owner    client.Client
-	MaxConns int
+	MaxConns uint8
 	Conns    []net.Conn
 }
