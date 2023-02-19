@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"test-sse/client"
+	"test-sse/message"
 	"test-sse/room"
 )
 
@@ -22,10 +23,11 @@ type TcpServer struct {
 type Session struct {
 	ctx  string
 	conn net.Conn
+	room *room.Room
 }
 
-var rooms []room.Room
-var clients []client.Client
+var rooms []*room.Room
+var clients = make(map[net.Conn]client.Client)
 
 func NewServer(addr string) *TcpServer {
 	return &TcpServer{listenAddr: addr, quitch: make(chan struct{})}
@@ -64,7 +66,7 @@ func (s *TcpServer) HandleConn(conn net.Conn) {
 	var err error
 loop:
 	for {
-		fmt.Println(clientSession.ctx)
+		// fmt.Println(clientSession.ctx)
 		switch clientSession.ctx {
 		case "welcome":
 			err = handleWelcome(clientSession)
@@ -76,8 +78,13 @@ loop:
 			if err != nil {
 				break loop
 			}
+		case "join":
+			err = handleJoin(clientSession)
+			if err != nil {
+				break loop
+			}
 		case "room":
-			err = handleCreate(clientSession)
+			err = handleRoom(clientSession)
 			if err != nil {
 				break loop
 			}
@@ -88,10 +95,7 @@ loop:
 }
 
 func handleWelcome(session *Session) error {
-	session.conn.Write([]byte("\033[2J\033[1;1H"))
-	session.conn.Write([]byte("\nWelcome to the app\n"))
-	session.conn.Write([]byte("1-join room\n"))
-	session.conn.Write([]byte("2-create room\n"))
+	session.conn.Write([]byte("\033[2J\033[1;1H\nWelcome to the app\n1-join room\n2-create room\n"))
 
 	for {
 		session.conn.Write([]byte("choice : "))
@@ -118,7 +122,7 @@ func handleWelcome(session *Session) error {
 func handleCreate(session *Session) error {
 	var room room.Room
 	var client client.Client
-	prompt := []string{"room name : ", "room size(max 255) : ", "username : "}
+	prompt := []string{"room name : ", "room size(max 255) : ", "clientname : "}
 	session.conn.Write([]byte("\033[2J\033[1;1H"))
 
 	ptr_idx := 0
@@ -133,10 +137,10 @@ func handleCreate(session *Session) error {
 		} else if ptr_idx == 1 {
 			maxconns, err := strconv.Atoi(string(inp))
 			if err != nil {
-				session.conn.Write([]byte(err.Error()))
+				session.conn.Write([]byte("invalid entry\n"))
 				continue
 			}
-			if maxconns < 0 || maxconns > 255 {
+			if maxconns <= 1 || maxconns > 255 {
 				session.conn.Write([]byte("invalid entry\n"))
 				continue
 			}
@@ -147,13 +151,84 @@ func handleCreate(session *Session) error {
 		}
 		ptr_idx++
 	}
+
+	room.BroadcastChan = make(chan message.Message)
+	room.Owner = client
+	room.Conns = append(room.Conns, client.Conn)
+
 	session.ctx = "room"
-	rooms = append(rooms, room)
-	clients = append(clients, client)
+	session.room = &room
+	rooms = append(rooms, &room)
+	clients[session.conn] = client
+	go func() {
+		roomBroadCast(&room)
+	}()
 	return nil
 }
 
-func handleRoom(session *Session) {
+func handleJoin(session *Session) error {
+	session.conn.Write([]byte("\033[2J\033[1;1H"))
+	session.conn.Write([]byte("Select room you want to join\n"))
+	session.conn.Write([]byte("0-return to welcome page\n"))
+	for idx, room := range rooms {
+		session.conn.Write([]byte(fmt.Sprintf("%d-%s (owner: %s) (%d/%d)\n", idx+1, room.Name, room.Owner.Name, len(room.Conns), room.MaxConns)))
+	}
+
+	for {
+		session.conn.Write([]byte("choice : "))
+		inp, err := readInput(session.conn)
+		if err != nil {
+			return ErrConnection
+		}
+
+		intInp, err := strconv.Atoi(string(inp))
+		if err != nil {
+			session.conn.Write([]byte("invalid entry\n"))
+			continue
+		}
+
+		if intInp < 0 || intInp > len(rooms) {
+			session.conn.Write([]byte("invalid entry\n"))
+			continue
+		}
+
+		if intInp == 0 {
+			session.ctx = "welcome"
+			return nil
+		}
+
+		if len(rooms[intInp-1].Conns) == int(rooms[intInp-1].MaxConns) {
+			session.conn.Write([]byte("room is full choose another room\n"))
+			continue
+		}
+
+		session.ctx = "room"
+		session.room = rooms[intInp-1]
+		_, ok := clients[session.conn]
+		if !ok {
+			err = registerClient(session.conn)
+			if err != nil {
+				return err
+			}
+			rooms[intInp-1].Conns = append(rooms[intInp-1].Conns, session.conn)
+		}
+		return nil
+	}
+}
+
+func handleRoom(session *Session) error {
+	// display something
+	/*
+		display client joined the room V
+		readinput from client
+		and display it on his screen
+
+	*/
+	client := clients[session.conn]
+	session.conn.Write([]byte("\033[2J\033[1;1H"))
+	session.conn.Write([]byte("<<< " + client.Name + " " + "joined the room" + " >>>\n"))
+	err := readInputContinuously(session.conn, session.room)
+	return err
 }
 
 func readInput(conn net.Conn) ([]byte, error) {
@@ -169,94 +244,123 @@ func readInput(conn net.Conn) ([]byte, error) {
 	}
 	return buf[:n-1], nil
 }
-func readInput2(conn net.Conn) ([]byte, error) {
+func readInputContinuously(conn net.Conn, room *room.Room) error {
 	buf := make([]byte, 1024)
+	var message = message.Message{Owner: clients[conn]}
 	for {
 		n, err := conn.Read(buf)
 		if err != nil {
 			if err == io.EOF {
 				log.Printf("client %s disconnected\n", conn.RemoteAddr().String())
-				return []byte{}, err
+				return err
 			}
 			log.Println("read from connection error: ", err)
-			return []byte{}, err
+			return err
 		}
-		return buf[:n-1], nil
+		// brodcast message to all clients in the room
+		message.Text = buf[:n-1]
+		room.BroadcastChan <- message
 	}
 }
 
-func (s *TcpServer) DisplayPrompt(session *Session) {
-	switch session.ctx {
-	case "welcome":
-		s.DisplayWelcomePrompt(session.conn)
-	case "join":
-		s.DisplayJoinRoomPrompt(session.conn)
-	case "create":
-		s.DisplayCreateRoomPrompt(session.conn)
-	default:
-		panic("Can't display context")
+func roomBroadCast(room *room.Room) {
+	for {
+		msg := <-room.BroadcastChan
+		// broadcast message to all clients
+		for i := 0; i < len(room.Conns); i++ {
+			room.Conns[i].Write([]byte(fmt.Sprintf("msg content [%s] from %s\n", string(msg.Text), msg.Owner.Name)))
+		}
+		// broadcase that a client joined the chat
 	}
 }
 
-func (s *TcpServer) DisplayWelcomePrompt(conn net.Conn) {
-	// TODO: could be optimised as one conn.Write
+func registerClient(conn net.Conn) error {
 	conn.Write([]byte("\033[2J\033[1;1H"))
-	conn.Write([]byte("\nWelcome to the app\n"))
-	conn.Write([]byte("1-join room\n"))
-	conn.Write([]byte("2-create room\n"))
-	conn.Write([]byte("choice : "))
-}
+	conn.Write([]byte("clientname : "))
 
-func (s *TcpServer) DisplayJoinRoomPrompt(conn net.Conn) {
-	conn.Write([]byte("\033[2J\033[1;1H"))
-	conn.Write([]byte("\njoin room tab : "))
-}
-
-func (s *TcpServer) DisplayCreateRoomPrompt(conn net.Conn) func() {
-	conn.Write([]byte("\033[2J\033[1;1H"))
-	conn.Write([]byte("\ncreate room name : "))
-	promptQueue := [][]byte{[]byte("\ncreate maximum connections : "), []byte("\nowner name : ")}
-	idx := 0
-	return func() {
-		conn.Write(promptQueue[idx])
-	}
-}
-
-func parseInput(input []byte, session *Session) error {
-	var err error
-	switch session.ctx {
-	case "welcome":
-		err = parseWelcomeInput(input, session)
-	case "create":
-		// err = parseCreateRoomInput(input)
-	case "join":
-		// err = parseJoinRoomInput(input)
-	case "room":
-		// err = parseInRoomInput(input)
-	default:
-		panic("Can't parse message context")
-	}
-
+	inp, err := readInput(conn)
 	if err != nil {
 		return err
 	}
+	var client client.Client
+	client.Name = string(inp)
+	client.Conn = conn
+	clients[conn] = client
 	return nil
 }
 
-func parseWelcomeInput(input []byte, session *Session) error {
-	inp := string(input)
-	if inp != "1" && inp != "2" {
-		return errors.New("invalid entry")
-	}
+// func (s *TcpServer) DisplayPrompt(session *Session) {
+// 	switch session.ctx {
+// 	case "welcome":
+// 		s.DisplayWelcomePrompt(session.conn)
+// 	case "join":
+// 		s.DisplayJoinRoomPrompt(session.conn)
+// 	case "create":
+// 		s.DisplayCreateRoomPrompt(session.conn)
+// 	default:
+// 		panic("Can't display context")
+// 	}
+// }
 
-	if inp == "1" {
-		session.ctx = "join"
-	} else {
-		session.ctx = "create"
-	}
+// func (s *TcpServer) DisplayWelcomePrompt(conn net.Conn) {
+// 	// TODO: could be optimised as one conn.Write
+// 	conn.Write([]byte("\033[2J\033[1;1H"))
+// 	conn.Write([]byte("\nWelcome to the app\n"))
+// 	conn.Write([]byte("1-join room\n"))
+// 	conn.Write([]byte("2-create room\n"))
+// 	conn.Write([]byte("choice : "))
+// }
 
-	return nil
-}
+// func (s *TcpServer) DisplayJoinRoomPrompt(conn net.Conn) {
+// 	conn.Write([]byte("\033[2J\033[1;1H"))
+// 	conn.Write([]byte("\njoin room tab : "))
+// }
+
+// func (s *TcpServer) DisplayCreateRoomPrompt(conn net.Conn) func() {
+// 	conn.Write([]byte("\033[2J\033[1;1H"))
+// 	conn.Write([]byte("\ncreate room name : "))
+// 	promptQueue := [][]byte{[]byte("\ncreate maximum connections : "), []byte("\nowner name : ")}
+// 	idx := 0
+// 	return func() {
+// 		conn.Write(promptQueue[idx])
+// 	}
+// }
+
+// func parseInput(input []byte, session *Session) error {
+// 	var err error
+// 	switch session.ctx {
+// 	case "welcome":
+// 		err = parseWelcomeInput(input, session)
+// 	case "create":
+// 		// err = parseCreateRoomInput(input)
+// 	case "join":
+// 		// err = parseJoinRoomInput(input)
+// 	case "room":
+// 		// err = parseInRoomInput(input)
+// 	default:
+// 		panic("Can't parse message context")
+// 	}
+
+// 	if err != nil {
+// 		return err
+// 	}
+// 	return nil
+// }
+
+// func parseWelcomeInput(input []byte, session *Session) error {
+// 	inp := string(input)
+// 	if inp != "1" && inp != "2" {
+// 		return errors.New("invalid entry")
+// 	}
+
+// 	if inp == "1" {
+// 		session.ctx = "join"
+// 	} else {
+// 		session.ctx = "create"
+// 	}
+
+// 	return nil
+// }
 
 // func parseCreateRoomInput(room *room.Room, input []byte) error {
 
