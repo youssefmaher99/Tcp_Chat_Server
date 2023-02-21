@@ -9,10 +9,12 @@ import (
 	"strconv"
 	"test-sse/client"
 	"test-sse/message"
-	"test-sse/room"
+	r "test-sse/room"
+	"time"
 )
 
 var ErrConnection = errors.New("connection error")
+var DisconnectClient = errors.New("disconnect client")
 
 type TcpServer struct {
 	listenAddr string
@@ -23,10 +25,10 @@ type TcpServer struct {
 type Session struct {
 	ctx  string
 	conn net.Conn
-	room *room.Room
+	room *r.Room
 }
 
-var rooms []*room.Room
+var rooms []*r.Room
 var clients = make(map[net.Conn]client.Client)
 
 func NewServer(addr string) *TcpServer {
@@ -85,6 +87,7 @@ loop:
 			}
 		case "room":
 			err = handleRoom(clientSession)
+			log.Println(err)
 			if err != nil {
 				break loop
 			}
@@ -120,7 +123,8 @@ func handleWelcome(session *Session) error {
 }
 
 func handleCreate(session *Session) error {
-	var room room.Room
+	var room r.Room
+	room.Conns = make(map[net.Conn]struct{})
 	var client client.Client
 	prompt := []string{"room name : ", "room size(max 255) : ", "clientname : "}
 	session.conn.Write([]byte("\033[2J\033[1;1H"))
@@ -152,16 +156,21 @@ func handleCreate(session *Session) error {
 		ptr_idx++
 	}
 
-	room.BroadcastChan = make(chan message.Message)
+	room.BroadcastChan = make(chan r.Event)
 	room.Owner = client
-	room.Conns = append(room.Conns, client.Conn)
+	// room.Conns = append(room.Conns, client.Conn)
 
 	session.ctx = "room"
 	session.room = &room
 	rooms = append(rooms, &room)
 	clients[session.conn] = client
 	go func() {
-		roomBroadCast(&room)
+		room.Broadcast()
+	}()
+	// HACK : to make sure that the owner will see x joined the room before initiating the broadcast channel
+	go func() {
+		time.Sleep(time.Millisecond * 10)
+		room.Join(client.Conn, clients[session.conn].Name)
 	}()
 	return nil
 }
@@ -206,27 +215,18 @@ func handleJoin(session *Session) error {
 		session.room = rooms[intInp-1]
 		_, ok := clients[session.conn]
 		if !ok {
-			err = registerClient(session.conn)
+			err = registerClient(session)
 			if err != nil {
 				return err
 			}
-			rooms[intInp-1].Conns = append(rooms[intInp-1].Conns, session.conn)
 		}
+		rooms[intInp-1].Join(session.conn, clients[session.conn].Name)
 		return nil
 	}
 }
 
 func handleRoom(session *Session) error {
-	// display something
-	/*
-		display client joined the room V
-		readinput from client
-		and display it on his screen
-
-	*/
-	client := clients[session.conn]
 	session.conn.Write([]byte("\033[2J\033[1;1H"))
-	session.conn.Write([]byte("<<< " + client.Name + " " + "joined the room" + " >>>\n"))
 	err := readInputContinuously(session.conn, session.room)
 	return err
 }
@@ -237,6 +237,10 @@ func readInput(conn net.Conn) ([]byte, error) {
 	if err != nil {
 		if err == io.EOF {
 			log.Printf("client %s disconnected\n", conn.RemoteAddr().String())
+			// if room != nil {
+			// 	room.Leave(conn, clients[conn].Name)
+			// }
+			delete(clients, conn)
 			return []byte{}, err
 		}
 		log.Println("read from connection error: ", err)
@@ -244,7 +248,7 @@ func readInput(conn net.Conn) ([]byte, error) {
 	}
 	return buf[:n-1], nil
 }
-func readInputContinuously(conn net.Conn, room *room.Room) error {
+func readInputContinuously(conn net.Conn, room *r.Room) error {
 	buf := make([]byte, 1024)
 	var message = message.Message{Owner: clients[conn]}
 	for {
@@ -252,41 +256,51 @@ func readInputContinuously(conn net.Conn, room *room.Room) error {
 		if err != nil {
 			if err == io.EOF {
 				log.Printf("client %s disconnected\n", conn.RemoteAddr().String())
-				return err
+			} else {
+				log.Println("read from connection error: ", err)
 			}
-			log.Println("read from connection error: ", err)
+			if room != nil {
+				room.Leave(conn, clients[conn].Name)
+				if room.Owner.Conn == conn {
+					removeRoom(room)
+				}
+			}
+			delete(clients, conn)
 			return err
 		}
 		// brodcast message to all clients in the room
 		message.Text = buf[:n-1]
-		room.BroadcastChan <- message
-	}
-}
-
-func roomBroadCast(room *room.Room) {
-	for {
-		msg := <-room.BroadcastChan
-		// broadcast message to all clients
-		for i := 0; i < len(room.Conns); i++ {
-			room.Conns[i].Write([]byte(fmt.Sprintf("msg content [%s] from %s\n", string(msg.Text), msg.Owner.Name)))
+		select {
+		case room.BroadcastChan <- message:
+			// fmt.Println(message)
+		default:
+			return DisconnectClient
 		}
-		// broadcase that a client joined the chat
 	}
 }
 
-func registerClient(conn net.Conn) error {
-	conn.Write([]byte("\033[2J\033[1;1H"))
-	conn.Write([]byte("clientname : "))
+func registerClient(session *Session) error {
+	session.conn.Write([]byte("\033[2J\033[1;1H"))
+	session.conn.Write([]byte("clientname : "))
 
-	inp, err := readInput(conn)
+	inp, err := readInput(session.conn)
 	if err != nil {
 		return err
 	}
 	var client client.Client
 	client.Name = string(inp)
-	client.Conn = conn
-	clients[conn] = client
+	client.Conn = session.conn
+	clients[session.conn] = client
 	return nil
+}
+
+func removeRoom(room *r.Room) {
+	for i := 0; i < len(rooms); i++ {
+		if room == rooms[i] {
+			rooms = append(rooms[:i], rooms[i+1:]...)
+			break
+		}
+	}
 }
 
 // func (s *TcpServer) DisplayPrompt(session *Session) {

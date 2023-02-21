@@ -6,3 +6,5 @@ type Message struct {
 	Text  []byte
 	Owner client.Client
 }
+
+func (m Message) Send() {}
