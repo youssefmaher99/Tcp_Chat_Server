@@ -14,7 +14,14 @@ import (
 )
 
 var ErrConnection = errors.New("connection error")
-var DisconnectClient = errors.New("disconnect client")
+var ErrDisconnectClient = errors.New("disconnect client")
+
+const (
+	Welcome uint8 = iota
+	Create
+	Join
+	Room
+)
 
 type TcpServer struct {
 	listenAddr string
@@ -23,7 +30,7 @@ type TcpServer struct {
 }
 
 type Session struct {
-	ctx  string
+	ctx  uint8
 	conn net.Conn
 	room *r.Room
 }
@@ -63,29 +70,29 @@ func (s *TcpServer) AcceptLoop() {
 }
 
 func (s *TcpServer) HandleConn(conn net.Conn) {
-	clientSession := &Session{ctx: "welcome", conn: conn}
+	clientSession := &Session{ctx: Welcome, conn: conn}
 	defer conn.Close()
 	var err error
 loop:
 	for {
 		// fmt.Println(clientSession.ctx)
 		switch clientSession.ctx {
-		case "welcome":
+		case Welcome:
 			err = handleWelcome(clientSession)
 			if err != nil {
 				break loop
 			}
-		case "create":
+		case Create:
 			err = handleCreate(clientSession)
 			if err != nil {
 				break loop
 			}
-		case "join":
+		case Join:
 			err = handleJoin(clientSession)
 			if err != nil {
 				break loop
 			}
-		case "room":
+		case Room:
 			err = handleRoom(clientSession)
 			log.Println(err)
 			if err != nil {
@@ -112,9 +119,9 @@ func handleWelcome(session *Session) error {
 		}
 
 		if string(inp) == "1" {
-			session.ctx = "join"
+			session.ctx = Join
 		} else {
-			session.ctx = "create"
+			session.ctx = Create
 		}
 
 		return nil
@@ -160,7 +167,7 @@ func handleCreate(session *Session) error {
 	room.Owner = client
 	// room.Conns = append(room.Conns, client.Conn)
 
-	session.ctx = "room"
+	session.ctx = Room
 	session.room = &room
 	rooms = append(rooms, &room)
 	clients[session.conn] = client
@@ -202,7 +209,7 @@ func handleJoin(session *Session) error {
 		}
 
 		if intInp == 0 {
-			session.ctx = "welcome"
+			session.ctx = Welcome
 			return nil
 		}
 
@@ -211,7 +218,7 @@ func handleJoin(session *Session) error {
 			continue
 		}
 
-		session.ctx = "room"
+		session.ctx = Room
 		session.room = rooms[intInp-1]
 		_, ok := clients[session.conn]
 		if !ok {
@@ -274,7 +281,7 @@ func readInputContinuously(conn net.Conn, room *r.Room) error {
 		case room.BroadcastChan <- message:
 			// fmt.Println(message)
 		default:
-			return DisconnectClient
+			return ErrDisconnectClient
 		}
 	}
 }
