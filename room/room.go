@@ -64,7 +64,7 @@ func (r *Room) Broadcast() {
 			}
 		case message.Message:
 			for conn := range r.Conns {
-				conn.Write([]byte(fmt.Sprintf("[%s] %s\n", ev.Owner.Name, string(ev.Text))))
+				conn.Write([]byte(fmt.Sprintf("[%s] %s", ev.Owner.Name, string(ev.Text))))
 			}
 		}
 	}

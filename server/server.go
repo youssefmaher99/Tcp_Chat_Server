@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -256,10 +257,10 @@ func readInput(conn net.Conn) ([]byte, error) {
 	return buf[:n-1], nil
 }
 func readInputContinuously(conn net.Conn, room *r.Room) error {
-	buf := make([]byte, 1024)
+	// buf := make([]byte, 1024)
 	var message = message.Message{Owner: clients[conn]}
 	for {
-		n, err := conn.Read(buf)
+		userInput, err := bufio.NewReaderSize(conn, 1024).ReadBytes('\n')
 		if err != nil {
 			if err == io.EOF {
 				log.Printf("client %s disconnected\n", conn.RemoteAddr().String())
@@ -276,7 +277,7 @@ func readInputContinuously(conn net.Conn, room *r.Room) error {
 			return err
 		}
 		// brodcast message to all clients in the room
-		message.Text = buf[:n-1]
+		message.Text = userInput
 		select {
 		case room.BroadcastChan <- message:
 			// fmt.Println(message)
@@ -309,149 +310,3 @@ func removeRoom(room *r.Room) {
 		}
 	}
 }
-
-// func (s *TcpServer) DisplayPrompt(session *Session) {
-// 	switch session.ctx {
-// 	case "welcome":
-// 		s.DisplayWelcomePrompt(session.conn)
-// 	case "join":
-// 		s.DisplayJoinRoomPrompt(session.conn)
-// 	case "create":
-// 		s.DisplayCreateRoomPrompt(session.conn)
-// 	default:
-// 		panic("Can't display context")
-// 	}
-// }
-
-// func (s *TcpServer) DisplayWelcomePrompt(conn net.Conn) {
-// 	// TODO: could be optimised as one conn.Write
-// 	conn.Write([]byte("\033[2J\033[1;1H"))
-// 	conn.Write([]byte("\nWelcome to the app\n"))
-// 	conn.Write([]byte("1-join room\n"))
-// 	conn.Write([]byte("2-create room\n"))
-// 	conn.Write([]byte("choice : "))
-// }
-
-// func (s *TcpServer) DisplayJoinRoomPrompt(conn net.Conn) {
-// 	conn.Write([]byte("\033[2J\033[1;1H"))
-// 	conn.Write([]byte("\njoin room tab : "))
-// }
-
-// func (s *TcpServer) DisplayCreateRoomPrompt(conn net.Conn) func() {
-// 	conn.Write([]byte("\033[2J\033[1;1H"))
-// 	conn.Write([]byte("\ncreate room name : "))
-// 	promptQueue := [][]byte{[]byte("\ncreate maximum connections : "), []byte("\nowner name : ")}
-// 	idx := 0
-// 	return func() {
-// 		conn.Write(promptQueue[idx])
-// 	}
-// }
-
-// func parseInput(input []byte, session *Session) error {
-// 	var err error
-// 	switch session.ctx {
-// 	case "welcome":
-// 		err = parseWelcomeInput(input, session)
-// 	case "create":
-// 		// err = parseCreateRoomInput(input)
-// 	case "join":
-// 		// err = parseJoinRoomInput(input)
-// 	case "room":
-// 		// err = parseInRoomInput(input)
-// 	default:
-// 		panic("Can't parse message context")
-// 	}
-
-// 	if err != nil {
-// 		return err
-// 	}
-// 	return nil
-// }
-
-// func parseWelcomeInput(input []byte, session *Session) error {
-// 	inp := string(input)
-// 	if inp != "1" && inp != "2" {
-// 		return errors.New("invalid entry")
-// 	}
-
-// 	if inp == "1" {
-// 		session.ctx = "join"
-// 	} else {
-// 		session.ctx = "create"
-// 	}
-
-// 	return nil
-// }
-
-// func parseCreateRoomInput(room *room.Room, input []byte) error {
-
-// 	return nil
-// }
-
-// func parseInRoomInput(input []byte) error {
-// 	return nil
-// }
-
-// func parseJoinRoomInput(input []byte) error {
-// 	return nil
-// }
-
-// func acceptWelcomeInput(session *Session) error {
-// 	buf := make([]byte, 1024)
-// 	prevCtx := session.ctx
-// 	for {
-// 		inp, _ := readInput(buf, session)
-// 		parseInput(inp, session)
-// 		nextCtx := session.ctx
-// 		if prevCtx != nextCtx {
-// 			break
-// 		}
-// 	}
-// 	return nil
-// }
-
-// func acceptCreateRoomInput(session *Session) error {
-// 	buf := make([]byte, 1024)
-// 	prevCtx := session.ctx
-// 	// room := room.Room{}
-// 	for {
-// 		inp, _ := readInput(buf, session)
-// 		parseInput(inp, session)
-// 		nextCtx := session.ctx
-// 		if prevCtx != nextCtx {
-// 			break
-// 		}
-// 	}
-// 	return nil
-// }
-
-// func readInput(buf []byte, session *Session) ([]byte, error) {
-// 	n, err := session.conn.Read(buf)
-// 	if err != nil {
-// 		if err == io.EOF {
-// 			log.Printf("client %s disconnected\n", session.conn.RemoteAddr().String())
-// 			return []byte{}, err
-// 		}
-// 		log.Println("read from connection error: ", err)
-// 		return []byte{}, err
-// 	}
-// 	return buf[:n-1], nil
-// }
-
-// func AcceptInput(session *Session) error {
-// 	var err error
-// 	switch session.ctx {
-// 	case "welcome":
-// 		err = acceptWelcomeInput(session)
-// 	case "create":
-// 		err = acceptCreateRoomInput(session)
-// 	// case "join":
-// 	// 	err = createRoomInput(session)
-// 	default:
-// 		panic("invalid accept input context")
-// 	}
-// 	if err != nil {
-// 		return err
-// 	}
-// 	return nil
-// }
