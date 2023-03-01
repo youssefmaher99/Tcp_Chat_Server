@@ -19,11 +19,11 @@ type Room struct {
 	MaxConns      uint8
 	Conns         map[net.Conn]struct{}
 	BroadcastChan chan Event
-	mu            *sync.Mutex
+	mu            *sync.RWMutex
 }
 
 func CreateRoom() Room {
-	return Room{mu: &sync.Mutex{}}
+	return Room{mu: &sync.RWMutex{}}
 }
 
 func (r *Room) Join(conn net.Conn, name string) {
@@ -34,7 +34,6 @@ func (r *Room) Join(conn net.Conn, name string) {
 }
 
 func (r *Room) Leave(conn net.Conn, name string) {
-	//HACK
 	if r.Owner.Conn == conn {
 		r.BroadcastChan <- event.CloseEvent{}
 	} else {
@@ -43,23 +42,10 @@ func (r *Room) Leave(conn net.Conn, name string) {
 	}
 }
 
-func (r *Room) Exist(conn net.Conn) bool {
-	if _, ok := r.Conns[conn]; ok {
-		return true
-	}
-	return false
-}
-
-func (r *Room) RoomLen() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.Conns)
-}
-
 func (r *Room) GetConns() []net.Conn {
 	conns := []net.Conn{}
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	for conn := range r.Conns {
 		conns = append(conns, conn)
 	}

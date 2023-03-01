@@ -39,11 +39,7 @@ type Session struct {
 }
 
 var rooms []*r.Room
-
-// var clients = make(map[net.Conn]client.Client)
 var clients = client.Clients{Lock: &sync.RWMutex{}, Store: make(map[net.Conn]client.Client)}
-
-// var regClients = new(client.Clients)
 
 func NewServer(addr string) *TcpServer {
 	return &TcpServer{listenAddr: addr, quitch: make(chan struct{})}
@@ -187,7 +183,6 @@ func handleCreate(session *Session) error {
 	go func() {
 		time.Sleep(time.Millisecond * 10)
 		room.Join(client.Conn, clients.Get(session.conn).Name)
-		// room.Join(client.Conn, clients[session.conn].Name)
 	}()
 	return nil
 }
@@ -197,7 +192,7 @@ func handleJoin(session *Session) error {
 	session.conn.Write([]byte("Select room you want to join\n"))
 	session.conn.Write([]byte("0-return to welcome page\n"))
 	for idx, room := range rooms {
-		session.conn.Write([]byte(fmt.Sprintf("%d-%s (owner: %s) (%d/%d)\n", idx+1, room.Name, room.Owner.Name, room.RoomLen(), room.MaxConns)))
+		session.conn.Write([]byte(fmt.Sprintf("%d-%s (owner: %s) (%d/%d)\n", idx+1, room.Name, room.Owner.Name, len(room.Conns), room.MaxConns)))
 	}
 
 	for {
@@ -233,13 +228,6 @@ func handleJoin(session *Session) error {
 		mu := sync.Mutex{}
 		mu.Lock()
 		defer mu.Unlock()
-		// _, ok := clients[session.conn]
-		// if !ok {
-		// 	err = registerClient(session)
-		// 	if err != nil {
-		// 		return err
-		// 	}
-		// }
 		if !clients.Exist(session.conn) {
 			err = registerClient(session)
 			if err != nil {
@@ -263,9 +251,6 @@ func readInput(conn net.Conn) ([]byte, error) {
 	if err != nil {
 		if err == io.EOF {
 			log.Printf("client %s disconnected\n", conn.RemoteAddr().String())
-			// if room != nil {
-			// 	room.Leave(conn, clients[conn].Name)
-			// }
 			clients.Remove(conn)
 			return []byte{}, err
 		}
@@ -319,7 +304,6 @@ func registerClient(session *Session) error {
 	var client client.Client
 	client.Name = string(inp)
 	client.Conn = session.conn
-	// clients[session.conn] = client
 	clients.Set(session.conn, client)
 	return nil
 }
