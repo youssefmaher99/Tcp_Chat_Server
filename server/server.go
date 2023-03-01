@@ -8,8 +8,10 @@ import (
 	"log"
 	"net"
 	"strconv"
+	"sync"
 	"test-sse/client"
 	"test-sse/message"
+	"test-sse/room"
 	r "test-sse/room"
 	"time"
 )
@@ -37,7 +39,11 @@ type Session struct {
 }
 
 var rooms []*r.Room
-var clients = make(map[net.Conn]client.Client)
+
+// var clients = make(map[net.Conn]client.Client)
+var clients = client.Clients{Lock: &sync.RWMutex{}, Store: make(map[net.Conn]client.Client)}
+
+// var regClients = new(client.Clients)
 
 func NewServer(addr string) *TcpServer {
 	return &TcpServer{listenAddr: addr, quitch: make(chan struct{})}
@@ -131,7 +137,7 @@ func handleWelcome(session *Session) error {
 }
 
 func handleCreate(session *Session) error {
-	var room r.Room
+	room := room.CreateRoom()
 	room.Conns = make(map[net.Conn]struct{})
 	var client client.Client
 	prompt := []string{"room name : ", "room size(max 255) : ", "clientname : "}
@@ -171,14 +177,17 @@ func handleCreate(session *Session) error {
 	session.ctx = Room
 	session.room = &room
 	rooms = append(rooms, &room)
-	clients[session.conn] = client
+	// clients[session.conn] = client
+	clients.Set(session.conn, client)
 	go func() {
 		room.Broadcast()
 	}()
+
 	// HACK : to make sure that the owner will see x joined the room before initiating the broadcast channel
 	go func() {
 		time.Sleep(time.Millisecond * 10)
-		room.Join(client.Conn, clients[session.conn].Name)
+		room.Join(client.Conn, clients.Get(session.conn).Name)
+		// room.Join(client.Conn, clients[session.conn].Name)
 	}()
 	return nil
 }
@@ -188,7 +197,7 @@ func handleJoin(session *Session) error {
 	session.conn.Write([]byte("Select room you want to join\n"))
 	session.conn.Write([]byte("0-return to welcome page\n"))
 	for idx, room := range rooms {
-		session.conn.Write([]byte(fmt.Sprintf("%d-%s (owner: %s) (%d/%d)\n", idx+1, room.Name, room.Owner.Name, len(room.Conns), room.MaxConns)))
+		session.conn.Write([]byte(fmt.Sprintf("%d-%s (owner: %s) (%d/%d)\n", idx+1, room.Name, room.Owner.Name, room.RoomLen(), room.MaxConns)))
 	}
 
 	for {
@@ -221,14 +230,23 @@ func handleJoin(session *Session) error {
 
 		session.ctx = Room
 		session.room = rooms[intInp-1]
-		_, ok := clients[session.conn]
-		if !ok {
+		mu := sync.Mutex{}
+		mu.Lock()
+		defer mu.Unlock()
+		// _, ok := clients[session.conn]
+		// if !ok {
+		// 	err = registerClient(session)
+		// 	if err != nil {
+		// 		return err
+		// 	}
+		// }
+		if !clients.Exist(session.conn) {
 			err = registerClient(session)
 			if err != nil {
 				return err
 			}
 		}
-		rooms[intInp-1].Join(session.conn, clients[session.conn].Name)
+		rooms[intInp-1].Join(session.conn, clients.Get(session.conn).Name)
 		return nil
 	}
 }
@@ -248,7 +266,7 @@ func readInput(conn net.Conn) ([]byte, error) {
 			// if room != nil {
 			// 	room.Leave(conn, clients[conn].Name)
 			// }
-			delete(clients, conn)
+			clients.Remove(conn)
 			return []byte{}, err
 		}
 		log.Println("read from connection error: ", err)
@@ -257,10 +275,13 @@ func readInput(conn net.Conn) ([]byte, error) {
 	return buf[:n-1], nil
 }
 func readInputContinuously(conn net.Conn, room *r.Room) error {
-	// buf := make([]byte, 1024)
-	var message = message.Message{Owner: clients[conn]}
+	buf := bufio.NewReaderSize(conn, 1024)
+	mu := sync.Mutex{}
+	mu.Lock()
+	var message = message.Message{Owner: clients.Get(conn)}
+	mu.Unlock()
 	for {
-		userInput, err := bufio.NewReaderSize(conn, 1024).ReadBytes('\n')
+		input, err := buf.ReadBytes('\n')
 		if err != nil {
 			if err == io.EOF {
 				log.Printf("client %s disconnected\n", conn.RemoteAddr().String())
@@ -268,16 +289,16 @@ func readInputContinuously(conn net.Conn, room *r.Room) error {
 				log.Println("read from connection error: ", err)
 			}
 			if room != nil {
-				room.Leave(conn, clients[conn].Name)
+				room.Leave(conn, clients.Get(conn).Name)
 				if room.Owner.Conn == conn {
 					removeRoom(room)
 				}
 			}
-			delete(clients, conn)
+			clients.Remove(conn)
 			return err
 		}
 		// brodcast message to all clients in the room
-		message.Text = userInput
+		message.Text = input
 		select {
 		case room.BroadcastChan <- message:
 			// fmt.Println(message)
@@ -298,7 +319,8 @@ func registerClient(session *Session) error {
 	var client client.Client
 	client.Name = string(inp)
 	client.Conn = session.conn
-	clients[session.conn] = client
+	// clients[session.conn] = client
+	clients.Set(session.conn, client)
 	return nil
 }
 
