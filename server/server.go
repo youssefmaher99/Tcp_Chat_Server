@@ -11,7 +11,6 @@ import (
 	"sync"
 	"test-sse/client"
 	"test-sse/message"
-	"test-sse/room"
 	r "test-sse/room"
 	"time"
 )
@@ -33,13 +32,14 @@ type TcpServer struct {
 }
 
 type Session struct {
-	ctx  uint8
-	conn net.Conn
-	room *r.Room
+	ctx    uint8
+	conn   net.Conn
+	room   *r.Room
+	roomId string
 }
 
 var rooms []*r.Room
-var clients = client.Clients{Lock: &sync.RWMutex{}, Store: make(map[net.Conn]client.Client)}
+var clients = client.CreateClientsMap()
 
 func NewServer(addr string) *TcpServer {
 	return &TcpServer{listenAddr: addr, quitch: make(chan struct{})}
@@ -133,7 +133,7 @@ func handleWelcome(session *Session) error {
 }
 
 func handleCreate(session *Session) error {
-	room := room.CreateRoom()
+	room := r.CreateRoom()
 	room.Conns = make(map[net.Conn]struct{})
 	var client client.Client
 	prompt := []string{"room name : ", "room size(max 255) : ", "clientname : "}
@@ -241,7 +241,8 @@ func handleJoin(session *Session) error {
 
 func handleRoom(session *Session) error {
 	session.conn.Write([]byte("\033[2J\033[1;1H"))
-	err := readInputContinuously(session.conn, session.room)
+	roomId := session.room.Id
+	err := readInputContinuously(session.conn, session.room, roomId)
 	return err
 }
 
@@ -259,12 +260,11 @@ func readInput(conn net.Conn) ([]byte, error) {
 	}
 	return buf[:n-1], nil
 }
-func readInputContinuously(conn net.Conn, room *r.Room) error {
+
+// BUG: data race because 2 goroutines have access to the same reference
+func readInputContinuously(conn net.Conn, room *r.Room, roomId string) error {
 	buf := bufio.NewReaderSize(conn, 1024)
-	mu := sync.Mutex{}
-	mu.Lock()
 	var message = message.Message{Owner: clients.Get(conn)}
-	mu.Unlock()
 	for {
 		input, err := buf.ReadBytes('\n')
 		if err != nil {
@@ -276,7 +276,7 @@ func readInputContinuously(conn net.Conn, room *r.Room) error {
 			if room != nil {
 				room.Leave(conn, clients.Get(conn).Name)
 				if room.Owner.Conn == conn {
-					removeRoom(room)
+					// removeRoom(room)
 				}
 			}
 			clients.Remove(conn)
@@ -286,7 +286,6 @@ func readInputContinuously(conn net.Conn, room *r.Room) error {
 		message.Text = input
 		select {
 		case room.BroadcastChan <- message:
-			// fmt.Println(message)
 		default:
 			return ErrDisconnectClient
 		}

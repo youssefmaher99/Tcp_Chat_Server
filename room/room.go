@@ -7,6 +7,8 @@ import (
 	"test-sse/client"
 	"test-sse/event"
 	"test-sse/message"
+
+	"github.com/google/uuid"
 )
 
 type Event interface {
@@ -14,38 +16,44 @@ type Event interface {
 }
 
 type Room struct {
+	Id            string
 	Name          string
 	Owner         client.Client
 	MaxConns      uint8
 	Conns         map[net.Conn]struct{}
 	BroadcastChan chan Event
-	mu            *sync.RWMutex
+	lock          *sync.RWMutex
 }
 
 func CreateRoom() Room {
-	return Room{mu: &sync.RWMutex{}}
+	return Room{lock: &sync.RWMutex{}, Id: uuid.New().String()}
 }
 
 func (r *Room) Join(conn net.Conn, name string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.lock.Lock()
+	defer r.lock.Unlock()
 	r.Conns[conn] = struct{}{}
 	r.BroadcastChan <- event.JoinEvent{Name: name}
 }
 
 func (r *Room) Leave(conn net.Conn, name string) {
+	r.lock.RLock()
 	if r.Owner.Conn == conn {
 		r.BroadcastChan <- event.CloseEvent{}
 	} else {
-		delete(r.Conns, conn)
-		r.BroadcastChan <- event.LeaveEvent{Name: name}
+		// fmt.Println(r.Conns, r.BroadcastChan)
+		if r.Conns != nil && r.BroadcastChan != nil {
+			delete(r.Conns, conn)
+			r.BroadcastChan <- event.LeaveEvent{Name: name}
+		}
 	}
+	r.lock.RUnlock()
 }
 
 func (r *Room) GetConns() []net.Conn {
 	conns := []net.Conn{}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.lock.RLock()
+	defer r.lock.RUnlock()
 	for conn := range r.Conns {
 		conns = append(conns, conn)
 	}
@@ -54,7 +62,7 @@ func (r *Room) GetConns() []net.Conn {
 
 func (r *Room) Broadcast() {
 loop:
-	for {
+	for r.BroadcastChan != nil {
 		switch ev := (<-r.BroadcastChan).(type) {
 		case event.JoinEvent:
 			conns := r.GetConns()
@@ -70,8 +78,7 @@ loop:
 			for conn := range r.Conns {
 				conn.Write([]byte("ROOM IS CLOSED\n"))
 			}
-			r.Conns = nil
-			r.BroadcastChan = nil
+
 			break loop
 		case message.Message:
 			conns := r.GetConns()
@@ -80,4 +87,8 @@ loop:
 			}
 		}
 	}
+	r.BroadcastChan = nil
+	r.Conns = nil
+	r = nil
+	//HACK : without having a println the function is still seen in the switch case which is causing data race when running -race and owner close the room then a client try to leave
 }

@@ -12,31 +12,35 @@ type Client struct {
 
 type Clients struct {
 	Store map[net.Conn]Client
-	Lock  *sync.RWMutex
+	lock  *sync.RWMutex
 }
 
 func (cs Clients) Set(key net.Conn, value Client) {
-	cs.Lock.Lock()
+	cs.lock.Lock()
 	cs.Store[key] = value
-	cs.Lock.Unlock()
+	cs.lock.Unlock()
 }
 
 func (cs Clients) Get(key net.Conn) Client {
-	cs.Lock.RLock()
+	cs.lock.RLock()
 	client := cs.Store[key]
-	cs.Lock.RUnlock()
+	cs.lock.RUnlock()
 	return client
 }
 
 func (cs Clients) Remove(key net.Conn) {
-	cs.Lock.Lock()
+	cs.lock.Lock()
 	delete(cs.Store, key)
-	cs.Lock.Unlock()
+	cs.lock.Unlock()
 }
 
 func (cs Clients) Exist(key net.Conn) bool {
-	cs.Lock.Lock()
+	cs.lock.Lock()
 	_, ok := cs.Store[key]
-	cs.Lock.Unlock()
+	cs.lock.Unlock()
 	return ok
+}
+
+func CreateClientsMap() Clients {
+	return Clients{lock: &sync.RWMutex{}, Store: make(map[net.Conn]Client)}
 }
