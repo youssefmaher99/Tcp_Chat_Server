@@ -60,8 +60,7 @@ func (r *Room) GetConns() []net.Conn {
 	return conns
 }
 
-func (r *Room) Broadcast() {
-loop:
+func (r Room) Broadcast() {
 	for r.BroadcastChan != nil {
 		switch ev := (<-r.BroadcastChan).(type) {
 		case event.JoinEvent:
@@ -78,8 +77,9 @@ loop:
 			for conn := range r.Conns {
 				conn.Write([]byte("ROOM IS CLOSED\n"))
 			}
-
-			break loop
+			r.BroadcastChan = nil
+			r.Conns = nil
+			return
 		case message.Message:
 			conns := r.GetConns()
 			for _, conn := range conns {
@@ -87,8 +87,5 @@ loop:
 			}
 		}
 	}
-	r.BroadcastChan = nil
-	r.Conns = nil
-	r = nil
 	//HACK : without having a println the function is still seen in the switch case which is causing data race when running -race and owner close the room then a client try to leave
 }
