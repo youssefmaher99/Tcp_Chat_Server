@@ -6,6 +6,6 @@ import (
 )
 
 func main() {
-	serv := server.NewServer("127.0.0.1:8080")
+	serv := server.NewServer(":5000")
 	log.Fatal(serv.Start())
 }

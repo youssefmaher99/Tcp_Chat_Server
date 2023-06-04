@@ -46,7 +46,7 @@ func NewServer(addr string) *TcpServer {
 }
 
 func (s *TcpServer) Start() error {
-	lstn, err := net.Listen("tcp", s.listenAddr)
+	lstn, err := net.Listen("tcp", "127.0.0.1"+s.listenAddr)
 	if err != nil {
 		return err
 	}
@@ -61,6 +61,7 @@ func (s *TcpServer) Start() error {
 }
 
 func (s *TcpServer) AcceptLoop() {
+	log.Printf("server starting on port [%s]\n", s.listenAddr)
 	for {
 		conn, err := s.ln.Accept()
 		if err != nil {
